@@ -1,19 +1,22 @@
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel
-from videosdk.agents import Agent, AgentSession, RealTimePipeline, function_tool, MCPServerStdio, MCPServerHTTP
-from videosdk.plugins.google import GeminiRealtime, GeminiLiveConfig
+import asyncio
 import os
 import sys
-import uvicorn
-from dotenv import load_dotenv
-import asyncio
-from typing import Dict
 import traceback
 from pathlib import Path
+from typing import Dict
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from videosdk.agents import (Agent, AgentSession, MCPServerHTTP,
+                             MCPServerStdio, RealTimePipeline, function_tool)
+from videosdk.plugins.google import GeminiLiveConfig, GeminiRealtime
+
 load_dotenv()
 
-port = int(os.getenv("PORT", 8000)) # Use environment variable for port, default to 8000
+port = int(os.getenv("PORT", 10000)) # Use environment variable for port, default to 10000 for Render
 app = FastAPI()
 
 app.add_middleware(
@@ -220,4 +223,5 @@ async def test():
 
 if __name__ == "__main__":
     # Fixed to use the correct module name (server instead of main)
-    uvicorn.run("server:app", host="127.0.0.1", port=port, reload=True) # Added reload=True for dev
+    # Use 0.0.0.0 to bind to all interfaces for deployment platforms like Render
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True) # Added reload=True for dev
