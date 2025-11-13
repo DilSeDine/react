@@ -93,23 +93,6 @@ class MyVoiceAgent(Agent):
             # mcp_servers=mcp_servers
         )
         self.personality = personality
-    
-    async def say(self, text: str) -> None:
-        """Override say method to track all agent messages"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Agent saying: {text}")
-        
-        # Call parent say method
-        await super().say(text)
-        
-        # Track the message
-        if meeting_id not in conversation_logs:
-            conversation_logs[meeting_id] = []
-        conversation_logs[meeting_id].append({
-            "speaker": "agent",
-            "message": text,
-            "timestamp": asyncio.get_event_loop().time()
-        })
 
     async def on_enter(self) -> None:
         meeting_id = self.session.context.get("meetingId", "unknown")
@@ -123,8 +106,16 @@ class MyVoiceAgent(Agent):
         welcome_message = f"Hey, How can I help you today?"
         print(f"[{meeting_id}] Sending welcome message: {welcome_message}")
         
-        # Use our custom say method which will automatically track the message
-        await self.say(welcome_message)
+        # Use session.say() method
+        await self.session.say(welcome_message)
+        
+        # Manually track the welcome message
+        conversation_logs[meeting_id].append({
+            "speaker": "agent",
+            "message": welcome_message,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+        print(f"[{meeting_id}] Welcome message logged to conversation")
     
     async def on_exit(self) -> None:
         meeting_id = self.session.context.get("meetingId", "unknown")
@@ -157,14 +148,18 @@ class MyVoiceAgent(Agent):
     async def on_agent_speech(self, text: str) -> None:
         """Track agent speech for evaluation"""
         meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Agent said: {text}")
+        print(f"[{meeting_id}] Agent speech detected: {text}")
         if meeting_id not in conversation_logs:
             conversation_logs[meeting_id] = []
-        conversation_logs[meeting_id].append({
-            "speaker": "agent", 
-            "message": text,
-            "timestamp": asyncio.get_event_loop().time()
-        })
+        
+        # Check if this message is already logged to avoid duplicates
+        if not conversation_logs[meeting_id] or conversation_logs[meeting_id][-1]["message"] != text:
+            conversation_logs[meeting_id].append({
+                "speaker": "agent", 
+                "message": text,
+                "timestamp": asyncio.get_event_loop().time()
+            })
+            print(f"[{meeting_id}] Agent speech logged")
     
     async def on_user_transcript(self, transcript: str) -> None:
         """Alternative method to track user transcripts"""
@@ -178,6 +173,19 @@ class MyVoiceAgent(Agent):
         """Track when speech starts"""
         meeting_id = self.session.context.get("meetingId", "unknown")
         print(f"[{meeting_id}] Speech started by: {speaker}")
+    
+    def track_message(self, speaker: str, message: str) -> None:
+        """Manual method to track any message"""
+        meeting_id = self.session.context.get("meetingId", "unknown")
+        if meeting_id not in conversation_logs:
+            conversation_logs[meeting_id] = []
+        
+        conversation_logs[meeting_id].append({
+            "speaker": speaker,
+            "message": message,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+        print(f"[{meeting_id}] Manual tracking: {speaker} - {message[:50]}...")
     
     async def on_speech_ended(self, speaker: str) -> None:
         """Track when speech ends"""
