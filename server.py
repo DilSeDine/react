@@ -11,7 +11,8 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from videosdk.agents import (Agent, AgentSession, MCPServerHTTP,
-                             MCPServerStdio, RealTimePipeline, function_tool)
+                             MCPServerStdio, RealTimePipeline, function_tool, 
+                             RoomOptions, JobContext)
 from videosdk.plugins.google import GeminiLiveConfig, GeminiRealtime
 from videosdk.plugins.simli import SimliAvatar, SimliConfig
 
@@ -129,15 +130,10 @@ async def server_operations(req: MeetingReqConfig):
         if req.enable_avatar:
             print(f"[{meeting_id}] Avatar requested but SIMLI_API_KEY not found - using voice-only mode")
 
-    # Pass system_prompt and personality in the context if your agent uses them
+    # Create agent session without context parameter (newer API)
     session = AgentSession(
         agent=MyVoiceAgent(req.system_prompt, req.personality),
-        pipeline=pipeline,
-        context={
-            "meetingId": meeting_id,
-            "name": "Gemini Agent",
-            "videosdk_auth": req.token,
-        }
+        pipeline=pipeline
     )
 
     active_sessions[meeting_id] = session
@@ -145,7 +141,13 @@ async def server_operations(req: MeetingReqConfig):
 
     try:
         print(f"[{meeting_id}] Agent attempting to start...")
-        await session.start()
+        
+        # Set environment variables for VideoSDK connection
+        os.environ["VIDEOSDK_ROOM_ID"] = meeting_id
+        os.environ["VIDEOSDK_AUTH_TOKEN"] = req.token
+        
+        # Start the session - the room joining might be handled through environment variables
+        await session.start(wait_for_participant=True)
         print(f"[{meeting_id}] Agent session.start() completed normally.")
     except Exception as ex:
         print(f"[{meeting_id}] [ERROR] in agent session: {ex}")
