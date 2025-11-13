@@ -1,10 +1,10 @@
 import asyncio
 import os
-import re
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 import uvicorn
 from dotenv import load_dotenv
@@ -32,47 +32,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Global store for active agent sessions and conversation tracking ---
+# --- Global store for active agent sessions ---
 # We'll map meeting_id to the AgentSession instance
 active_sessions: Dict[str, AgentSession] = {}
-# Track conversations for evaluation
-conversation_logs: Dict[str, List[Dict]] = {}
-# Store evaluation results
-evaluation_results: Dict[str, Dict] = {}
-# --- ---
 
-def extract_evaluation_insights_static(conversation_text: str) -> Optional[Dict]:
-    """Static function to extract structured evaluation insights from conversation text"""
-    insights = {}
-    
-    # Define regex patterns for extracting evaluation insights
-    patterns = {
-        'communication_score': r'COMMUNICATION_SCORE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'business_case_analysis': r'BUSINESS_CASE_ANALYSIS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'leadership_potential': r'LEADERSHIP_POTENTIAL:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'team_dynamics_skills': r'TEAM_DYNAMICS_SKILLS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'market_strategy_knowledge': r'MARKET_STRATEGY_KNOWLEDGE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'client_management_experience': r'CLIENT_MANAGEMENT_EXPERIENCE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'overall_cultural_fit': r'OVERALL_CULTURAL_FIT:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-        'recommendation_status': r'RECOMMENDATION_STATUS:\s*(.*?)(?=\n|$)',
-        'improvement_areas': r'IMPROVEMENT_AREAS:\s*(.*?)(?=\n|$)',
-        'notable_strengths': r'NOTABLE_STRENGTHS:\s*(.*?)(?=\n|$)'
-    }
-    
-    for key, pattern in patterns.items():
-        match = re.search(pattern, conversation_text, re.IGNORECASE | re.DOTALL)
-        if match:
-            if key in ['communication_score', 'business_case_analysis', 'leadership_potential', 
-                      'team_dynamics_skills', 'market_strategy_knowledge', 'client_management_experience', 
-                      'overall_cultural_fit']:
-                insights[key] = {
-                    'score': int(match.group(1)),
-                    'feedback': match.group(2).strip()
-                }
-            else:
-                insights[key] = match.group(1).strip()
-    
-    return insights if insights else None
+# --- Global conversation store ---
+# We'll store conversation history for each meeting_id
+# Structure: {meeting_id: [{"type": "agent", "message": "...", "timestamp": "..."}, {"type": "user", "message": "...", "timestamp": "..."}]}
+conversation_store: Dict[str, list] = {}
+# --- ---
 
 class MyVoiceAgent(Agent):
     def __init__(self, system_prompt: str, personality: str):
@@ -93,162 +61,54 @@ class MyVoiceAgent(Agent):
             # mcp_servers=mcp_servers
         )
         self.personality = personality
+        self.meeting_id = None  # Will be set when session starts
+
+    def _log_conversation(self, message_type: str, content: str):
+        """Log conversation messages to the global store"""
+        if self.meeting_id and self.meeting_id in conversation_store:
+            timestamp = datetime.now().isoformat()
+            conversation_entry = {
+                "type": message_type,
+                "message": content,
+                "timestamp": timestamp
+            }
+            conversation_store[self.meeting_id].append(conversation_entry)
+            print(f"[{self.meeting_id}] Logged {message_type}: {content[:50]}...")
 
     async def on_enter(self) -> None:
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Agent entered meeting, initializing conversation log...")
+        # Get meeting_id from context
+        self.meeting_id = self.session.context.get("meetingId")
+        if self.meeting_id:
+            # Initialize conversation store for this meeting if not exists
+            if self.meeting_id not in conversation_store:
+                conversation_store[self.meeting_id] = []
+            print(f"[{self.meeting_id}] Conversation tracking initialized")
         
-        # Initialize conversation log for this meeting
-        if meeting_id not in conversation_logs:
-            conversation_logs[meeting_id] = []
-            print(f"[{meeting_id}] Created new conversation log")
-        
-        welcome_message = f"Hey, How can I help you today?"
-        print(f"[{meeting_id}] Sending welcome message: {welcome_message}")
-        
-        # Use session.say() method
-        await self.session.say(welcome_message)
-        
-        # Manually track the welcome message
-        conversation_logs[meeting_id].append({
-            "speaker": "agent",
-            "message": welcome_message,
-            "timestamp": asyncio.get_event_loop().time()
-        })
-        print(f"[{meeting_id}] Welcome message logged to conversation")
+        greeting = "Hey, How can I help you today?"
+        await self.session.say(greeting)
+        # Log the greeting as an agent message
+        self._log_conversation("agent", greeting)
     
     async def on_exit(self) -> None:
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        goodbye_message = "Goodbye!"
-        await self.session.say(goodbye_message)
-        
+        goodbye = "Goodbye!"
+        await self.session.say(goodbye)
         # Log the goodbye message
-        if meeting_id in conversation_logs:
-            conversation_logs[meeting_id].append({
-                "speaker": "agent",
-                "message": goodbye_message,
-                "timestamp": asyncio.get_event_loop().time()
-            })
-            
-            # Process evaluation when agent exits
-            await self.process_interview_evaluation(meeting_id)
+        self._log_conversation("agent", goodbye)
 
-    async def on_user_speech(self, transcript: str) -> None:
-        """Track user speech for evaluation"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] User said: {transcript}")
-        if meeting_id not in conversation_logs:
-            conversation_logs[meeting_id] = []
-        conversation_logs[meeting_id].append({
-            "speaker": "user",
-            "message": transcript,
-            "timestamp": asyncio.get_event_loop().time()
-        })
-
-    async def on_agent_speech(self, text: str) -> None:
-        """Track agent speech for evaluation"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Agent speech detected: {text}")
-        if meeting_id not in conversation_logs:
-            conversation_logs[meeting_id] = []
+    async def on_agent_output(self, content: str) -> None:
+        """Called when the agent speaks/outputs content"""
+        self._log_conversation("agent", content)
         
-        # Check if this message is already logged to avoid duplicates
-        if not conversation_logs[meeting_id] or conversation_logs[meeting_id][-1]["message"] != text:
-            conversation_logs[meeting_id].append({
-                "speaker": "agent", 
-                "message": text,
-                "timestamp": asyncio.get_event_loop().time()
-            })
-            print(f"[{meeting_id}] Agent speech logged")
-    
-    async def on_user_transcript(self, transcript: str) -> None:
-        """Alternative method to track user transcripts"""
-        await self.on_user_speech(transcript)
-    
-    async def on_agent_response(self, response: str) -> None:
-        """Alternative method to track agent responses"""
-        await self.on_agent_speech(response)
-        
-    async def on_speech_started(self, speaker: str) -> None:
-        """Track when speech starts"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Speech started by: {speaker}")
-    
-    def track_message(self, speaker: str, message: str) -> None:
-        """Manual method to track any message"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        if meeting_id not in conversation_logs:
-            conversation_logs[meeting_id] = []
-        
-        conversation_logs[meeting_id].append({
-            "speaker": speaker,
-            "message": message,
-            "timestamp": asyncio.get_event_loop().time()
-        })
-        print(f"[{meeting_id}] Manual tracking: {speaker} - {message[:50]}...")
-    
-    async def on_speech_ended(self, speaker: str) -> None:
-        """Track when speech ends"""
-        meeting_id = self.session.context.get("meetingId", "unknown")
-        print(f"[{meeting_id}] Speech ended by: {speaker}")
-
-    async def process_interview_evaluation(self, meeting_id: str) -> None:
-        """Process the conversation and extract evaluation insights"""
-        if meeting_id not in conversation_logs:
-            return
-            
-        conversation = conversation_logs[meeting_id]
-        full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation])
-        
-        # Extract evaluation insights using regex patterns
-        evaluation = self.extract_evaluation_insights(full_conversation)
-        
-        if evaluation:
-            evaluation_results[meeting_id] = {
-                "evaluation": evaluation,
-                "conversation": conversation,
-                "processed_at": asyncio.get_event_loop().time()
-            }
-            print(f"[{meeting_id}] Evaluation completed and stored.")
-
-    def extract_evaluation_insights(self, conversation_text: str) -> Optional[Dict]:
-        """Extract structured evaluation insights from conversation text"""
-        insights = {}
-        
-        # Define regex patterns for extracting evaluation insights
-        patterns = {
-            'communication_score': r'COMMUNICATION_SCORE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'business_case_analysis': r'BUSINESS_CASE_ANALYSIS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'leadership_potential': r'LEADERSHIP_POTENTIAL:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'team_dynamics_skills': r'TEAM_DYNAMICS_SKILLS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'market_strategy_knowledge': r'MARKET_STRATEGY_KNOWLEDGE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'client_management_experience': r'CLIENT_MANAGEMENT_EXPERIENCE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'overall_cultural_fit': r'OVERALL_CULTURAL_FIT:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
-            'recommendation_status': r'RECOMMENDATION_STATUS:\s*(.*?)(?=\n|$)',
-            'improvement_areas': r'IMPROVEMENT_AREAS:\s*(.*?)(?=\n|$)',
-            'notable_strengths': r'NOTABLE_STRENGTHS:\s*(.*?)(?=\n|$)'
-        }
-        
-        for key, pattern in patterns.items():
-            match = re.search(pattern, conversation_text, re.IGNORECASE | re.DOTALL)
-            if match:
-                if key in ['communication_score', 'business_case_analysis', 'leadership_potential', 
-                          'team_dynamics_skills', 'market_strategy_knowledge', 'client_management_experience', 
-                          'overall_cultural_fit']:
-                    insights[key] = {
-                        'score': int(match.group(1)),
-                        'feedback': match.group(2).strip()
-                    }
-                else:
-                    insights[key] = match.group(1).strip()
-        
-        return insights if insights else None
-        
+    async def on_user_input(self, content: str) -> None:
+        """Called when user speaks/inputs content"""
+        self._log_conversation("user", content)
 
     @function_tool
     async def end_call(self) -> None:
         """End the call upon request by the user"""
-        await self.session.say("Goodbye!")
+        goodbye = "Goodbye!"
+        await self.session.say(goodbye)
+        self._log_conversation("agent", goodbye)
         await asyncio.sleep(1)
         await self.session.leave()
   
@@ -268,7 +128,7 @@ class MeetingReqConfig(BaseModel):
 class LeaveAgentReqConfig(BaseModel): # For the leave endpoint
     meeting_id: str
 
-class GetEvaluationRequest(BaseModel):
+class ConversationReqConfig(BaseModel): # For the conversation endpoint
     meeting_id: str
 
 async def server_operations(req: MeetingReqConfig):
@@ -377,10 +237,17 @@ async def leave_agent(req: LeaveAgentReqConfig):
 
     if session:
         print(f"[{meeting_id}] Session removed from active_sessions.")
+        
+        # Note: We keep conversation history even after agent leaves
+        # This allows retrieving conversation data after the session ends
+        # If you want to clean it up, uncomment the line below:
+        # conversation_store.pop(meeting_id, None)
+        
         return {
             "status": "removed",
             "meeting_id": meeting_id,
-            "message": f"Session for meeting {meeting_id} has been removed."
+            "message": f"Session for meeting {meeting_id} has been removed.",
+            "conversation_preserved": True
         }
     else:
         print(f"[{meeting_id}] No session found in active_sessions.")
@@ -391,168 +258,60 @@ async def leave_agent(req: LeaveAgentReqConfig):
         }
 # --- END NEW/MODIFIED ENDPOINT ---
 
-# Optional: Keep these endpoints for debugging or manual access if needed
-@app.get("/debug/get-evaluation")
-async def debug_get_evaluation_info():
+# --- CONVERSATION TRACKING ENDPOINTS ---
+@app.get("/conversation")
+async def get_conversation_info():
     return {
-        "message": "Debug endpoint - use POST with meeting_id",
-        "active_evaluations": list(evaluation_results.keys()),
-        "active_conversations": list(conversation_logs.keys())
+        "error": "Method Not Allowed",
+        "message": "This endpoint requires a POST request with JSON data",
+        "usage": "POST /conversation",
+        "required_fields": {
+            "meeting_id": "string"
+        },
+        "description": "Get conversation history for a meeting session",
+        "documentation": "Visit /docs for interactive API documentation"
     }
 
-@app.get("/debug/conversations")
-async def debug_conversations():
-    """Debug endpoint to see all conversation logs"""
+@app.post("/conversation")
+async def get_conversation(req: ConversationReqConfig):
+    meeting_id = req.meeting_id
+    print(f"[{meeting_id}] Received /conversation request.")
+
+    conversation_history = conversation_store.get(meeting_id, [])
+    
+    if conversation_history:
+        print(f"[{meeting_id}] Returning {len(conversation_history)} conversation entries.")
+        return {
+            "status": "success",
+            "meeting_id": meeting_id,
+            "conversation": conversation_history,
+            "total_messages": len(conversation_history)
+        }
+    else:
+        print(f"[{meeting_id}] No conversation found.")
+        return {
+            "status": "not_found", 
+            "meeting_id": meeting_id,
+            "message": f"No conversation history found for meeting {meeting_id}.",
+            "conversation": [],
+            "total_messages": 0
+        }
+
+@app.get("/conversations")
+async def get_all_conversations():
+    """Get all conversation histories for debugging purposes"""
     return {
-        "total_conversations": len(conversation_logs),
+        "status": "success",
         "conversations": {
             meeting_id: {
-                "message_count": len(messages),
+                "total_messages": len(messages),
                 "messages": messages
-            } for meeting_id, messages in conversation_logs.items()
+            } 
+            for meeting_id, messages in conversation_store.items()
         },
-        "active_sessions": list(active_sessions.keys())
+        "total_meetings": len(conversation_store)
     }
-
-@app.get("/debug/conversation/{meeting_id}")
-async def debug_specific_conversation(meeting_id: str):
-    """Debug endpoint to see specific conversation"""
-    if meeting_id in conversation_logs:
-        return {
-            "meeting_id": meeting_id,
-            "message_count": len(conversation_logs[meeting_id]),
-            "conversation": conversation_logs[meeting_id],
-            "has_evaluation": meeting_id in evaluation_results,
-            "evaluation": evaluation_results.get(meeting_id, None)
-        }
-    else:
-        return {
-            "meeting_id": meeting_id,
-            "error": "Conversation not found",
-            "available_conversations": list(conversation_logs.keys())
-        }
-
-@app.post("/get-transcript")
-async def get_transcript(req: GetEvaluationRequest):
-    """Get conversation transcript and evaluation results for a meeting"""
-    meeting_id = req.meeting_id
-    print(f"[{meeting_id}] Received /get-transcript request.")
-    
-    # Check for existing evaluation results
-    evaluation_data = None
-    conversation_data = None
-    
-    if meeting_id in evaluation_results:
-        evaluation_data = evaluation_results[meeting_id]["evaluation"]
-        conversation_data = evaluation_results[meeting_id]["conversation"]
-        processed_at = evaluation_results[meeting_id]["processed_at"]
-        print(f"[{meeting_id}] Found existing evaluation results.")
-        
-        return {
-            "status": "found",
-            "meeting_id": meeting_id,
-            "has_evaluation": True,
-            "evaluation": evaluation_data,
-            "conversation": conversation_data,
-            "conversation_length": len(conversation_data),
-            "processed_at": processed_at,
-            "message": "Evaluation and conversation data retrieved from stored results."
-        }
-    
-    elif meeting_id in conversation_logs:
-        conversation_data = conversation_logs[meeting_id]
-        print(f"[{meeting_id}] Found conversation data, processing evaluation...")
-        
-        # Process evaluation using static method
-        full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation_data])
-        evaluation = extract_evaluation_insights_static(full_conversation)
-        
-        processed_at = asyncio.get_event_loop().time()
-        
-        if evaluation:
-            # Store the results for future requests
-            evaluation_results[meeting_id] = {
-                "evaluation": evaluation,
-                "conversation": conversation_data,
-                "processed_at": processed_at
-            }
-            evaluation_data = evaluation
-            print(f"[{meeting_id}] Evaluation processed and stored.")
-            
-            return {
-                "status": "processed",
-                "meeting_id": meeting_id,
-                "has_evaluation": True,
-                "evaluation": evaluation_data,
-                "conversation": conversation_data,
-                "conversation_length": len(conversation_data),
-                "processed_at": processed_at,
-                "message": "Evaluation processed from conversation data."
-            }
-        else:
-            print(f"[{meeting_id}] No evaluation insights found in conversation.")
-            return {
-                "status": "no_evaluation",
-                "meeting_id": meeting_id,
-                "has_evaluation": False,
-                "evaluation": None,
-                "conversation": conversation_data,
-                "conversation_length": len(conversation_data),
-                "processed_at": processed_at,
-                "message": "Conversation found but no evaluation insights detected."
-            }
-    
-    else:
-        print(f"[{meeting_id}] No conversation or evaluation data found.")
-        return {
-            "status": "not_found",
-            "meeting_id": meeting_id,
-            "has_evaluation": False,
-            "evaluation": None,
-            "conversation": None,
-            "conversation_length": 0,
-            "message": f"No conversation or evaluation data found for meeting {meeting_id}.",
-            "available_meetings": list(conversation_logs.keys())
-        }
-
-@app.post("/test/track-message")
-async def test_track_message(request: dict):
-    """Test endpoint to manually add messages and test tracking"""
-    meeting_id = request.get("meeting_id", "test-session")
-    speaker = request.get("speaker", "user")
-    message = request.get("message", "Test message")
-    
-    if meeting_id not in conversation_logs:
-        conversation_logs[meeting_id] = []
-    
-    conversation_logs[meeting_id].append({
-        "speaker": speaker,
-        "message": message,
-        "timestamp": asyncio.get_event_loop().time()
-    })
-    
-    return {
-        "success": True,
-        "meeting_id": meeting_id,
-        "message_added": f"{speaker}: {message}",
-        "total_messages": len(conversation_logs[meeting_id]),
-        "conversation": conversation_logs[meeting_id]
-    }
-
-@app.get("/test/conversation-status/{meeting_id}")
-async def test_conversation_status(meeting_id: str):
-    """Test endpoint to check real-time conversation status"""
-    return {
-        "meeting_id": meeting_id,
-        "active_session": meeting_id in active_sessions,
-        "has_conversation_log": meeting_id in conversation_logs,
-        "message_count": len(conversation_logs.get(meeting_id, [])),
-        "last_messages": conversation_logs.get(meeting_id, [])[-5:] if conversation_logs.get(meeting_id) else [],
-        "session_info": {
-            "active_sessions": list(active_sessions.keys()),
-            "total_conversations": len(conversation_logs)
-        }
-    }
+# --- END CONVERSATION TRACKING ENDPOINTS ---
 
 
 @app.get("/")
@@ -563,16 +322,11 @@ async def root():
         "endpoints": {
             "test": "GET /test - Test if server is running",
             "join_agent": "POST /join-agent - Join an AI agent to a meeting",
-            "leave_agent": "POST /leave-agent - Remove agent and get evaluation results",
-            "get_transcript": "POST /get-transcript - Get conversation transcript and evaluation results",
-            "debug_evaluation": "GET /debug/get-evaluation - Debug endpoint for evaluation data"
+            "leave_agent": "POST /leave-agent - Remove an agent from a meeting",
+            "conversation": "POST /conversation - Get conversation history for a meeting",
+            "conversations": "GET /conversations - Get all conversation histories (debug)"
         },
-        "docs": "Visit /docs for interactive API documentation",
-        "stats": {
-            "active_sessions": len(active_sessions),
-            "total_conversations": len(conversation_logs),
-            "completed_evaluations": len(evaluation_results)
-        }
+        "docs": "Visit /docs for interactive API documentation"
     }
 
 @app.get("/test")
