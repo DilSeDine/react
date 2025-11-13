@@ -327,66 +327,79 @@ async def leave_agent(req: LeaveAgentReqConfig):
     meeting_id = req.meeting_id
     print(f"[{meeting_id}] Received /leave-agent request.")
 
-    session = active_sessions.pop(meeting_id, None)
-
-    if session:
-        print(f"[{meeting_id}] Session removed from active_sessions.")
-        
-        # Try to trigger evaluation processing first
+    session = active_sessions.get(meeting_id, None)  # Don't pop yet, just get reference
+    
+    # STEP 1: Process evaluation FIRST before any session cleanup
+    evaluation_data = None
+    conversation_data = None
+    
+    print(f"[{meeting_id}] Processing evaluation before session cleanup...")
+    
+    # Try to process evaluation using the agent instance first
+    if session and hasattr(session, 'agent') and session.agent:
         try:
-            if hasattr(session, 'agent') and session.agent:
-                # Try to process evaluation using the agent
-                await session.agent.process_interview_evaluation(meeting_id)
-                print(f"[{meeting_id}] Evaluation processed using agent instance.")
+            await session.agent.process_interview_evaluation(meeting_id)
+            print(f"[{meeting_id}] Evaluation processed using agent instance.")
         except Exception as e:
             print(f"[{meeting_id}] Error processing evaluation with agent: {e}")
+    
+    # Check for evaluation results from agent processing
+    if meeting_id in evaluation_results:
+        evaluation_data = evaluation_results[meeting_id]["evaluation"]
+        conversation_data = evaluation_results[meeting_id]["conversation"]
+        print(f"[{meeting_id}] Evaluation results found from agent processing.")
+    elif meeting_id in conversation_logs:
+        conversation_data = conversation_logs[meeting_id]
+        print(f"[{meeting_id}] Conversation data found, processing evaluation with static method...")
         
-        # Try to close session gracefully (but don't await if it returns None)
+        # Use static method to process evaluation
+        full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation_data])
+        evaluation = extract_evaluation_insights_static(full_conversation)
+        
+        if evaluation:
+            evaluation_results[meeting_id] = {
+                "evaluation": evaluation,
+                "conversation": conversation_data,
+                "processed_at": asyncio.get_event_loop().time()
+            }
+            evaluation_data = evaluation
+            print(f"[{meeting_id}] Evaluation processed with static method and stored.")
+        else:
+            print(f"[{meeting_id}] No evaluation insights found in conversation.")
+    else:
+        print(f"[{meeting_id}] No conversation data found for evaluation.")
+    
+    # STEP 2: Now that evaluation is complete, safely cleanup session
+    if session:
+        print(f"[{meeting_id}] Starting session cleanup after evaluation processing...")
+        
+        # Remove from active sessions
+        active_sessions.pop(meeting_id, None)
+        print(f"[{meeting_id}] Session removed from active_sessions.")
+        
+        # Try to close session gracefully
         try:
-            leave_result = session.leave()
-            if leave_result is not None:
-                await leave_result
-                print(f"[{meeting_id}] Session.leave() completed successfully.")
+            if hasattr(session, 'leave') and callable(getattr(session, 'leave', None)):
+                leave_result = session.leave()
+                if leave_result is not None:
+                    await leave_result
+                    print(f"[{meeting_id}] Session.leave() completed successfully.")
+                else:
+                    print(f"[{meeting_id}] Session.leave() returned None, session likely already closed.")
             else:
-                print(f"[{meeting_id}] Session.leave() returned None, session likely already closed.")
+                print(f"[{meeting_id}] Session does not have a callable leave method.")
         except Exception as e:
             print(f"[{meeting_id}] Error during session.leave(): {e}")
-        
-        # Check for evaluation results
-        evaluation_data = None
-        conversation_data = None
-        
-        if meeting_id in evaluation_results:
-            evaluation_data = evaluation_results[meeting_id]["evaluation"]
-            conversation_data = evaluation_results[meeting_id]["conversation"]
-            print(f"[{meeting_id}] Evaluation results found and included in response.")
-        elif meeting_id in conversation_logs:
-            conversation_data = conversation_logs[meeting_id]
-            print(f"[{meeting_id}] Conversation data found, processing evaluation with static method...")
-            
-            # Use static method to process evaluation
-            full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation_data])
-            evaluation = extract_evaluation_insights_static(full_conversation)
-            
-            if evaluation:
-                evaluation_results[meeting_id] = {
-                    "evaluation": evaluation,
-                    "conversation": conversation_data,
-                    "processed_at": asyncio.get_event_loop().time()
-                }
-                evaluation_data = evaluation
-                print(f"[{meeting_id}] Evaluation processed with static method and stored.")
-            else:
-                print(f"[{meeting_id}] No evaluation insights found in conversation.")
         
         return {
             "status": "removed",
             "meeting_id": meeting_id,
-            "message": f"Session for meeting {meeting_id} has been removed.",
+            "message": f"Session for meeting {meeting_id} has been removed after processing evaluation.",
             "evaluation": evaluation_data,
             "conversation": conversation_data,
             "has_evaluation": evaluation_data is not None,
-            "conversation_length": len(conversation_data) if conversation_data else 0
+            "conversation_length": len(conversation_data) if conversation_data else 0,
+            "processing_order": "evaluation_first_then_cleanup"
         }
     else:
         print(f"[{meeting_id}] No session found in active_sessions.")
