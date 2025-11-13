@@ -93,22 +93,38 @@ class MyVoiceAgent(Agent):
             # mcp_servers=mcp_servers
         )
         self.personality = personality
+    
+    async def say(self, text: str) -> None:
+        """Override say method to track all agent messages"""
+        meeting_id = self.session.context.get("meetingId", "unknown")
+        print(f"[{meeting_id}] Agent saying: {text}")
+        
+        # Call parent say method
+        await super().say(text)
+        
+        # Track the message
+        if meeting_id not in conversation_logs:
+            conversation_logs[meeting_id] = []
+        conversation_logs[meeting_id].append({
+            "speaker": "agent",
+            "message": text,
+            "timestamp": asyncio.get_event_loop().time()
+        })
 
     async def on_enter(self) -> None:
         meeting_id = self.session.context.get("meetingId", "unknown")
+        print(f"[{meeting_id}] Agent entered meeting, initializing conversation log...")
+        
         # Initialize conversation log for this meeting
         if meeting_id not in conversation_logs:
             conversation_logs[meeting_id] = []
+            print(f"[{meeting_id}] Created new conversation log")
         
         welcome_message = f"Hey, How can I help you today?"
-        await self.session.say(welcome_message)
+        print(f"[{meeting_id}] Sending welcome message: {welcome_message}")
         
-        # Log the welcome message
-        conversation_logs[meeting_id].append({
-            "speaker": "agent",
-            "message": welcome_message,
-            "timestamp": asyncio.get_event_loop().time()
-        })
+        # Use our custom say method which will automatically track the message
+        await self.say(welcome_message)
     
     async def on_exit(self) -> None:
         meeting_id = self.session.context.get("meetingId", "unknown")
@@ -129,22 +145,44 @@ class MyVoiceAgent(Agent):
     async def on_user_speech(self, transcript: str) -> None:
         """Track user speech for evaluation"""
         meeting_id = self.session.context.get("meetingId", "unknown")
-        if meeting_id in conversation_logs:
-            conversation_logs[meeting_id].append({
-                "speaker": "user",
-                "message": transcript,
-                "timestamp": asyncio.get_event_loop().time()
-            })
+        print(f"[{meeting_id}] User said: {transcript}")
+        if meeting_id not in conversation_logs:
+            conversation_logs[meeting_id] = []
+        conversation_logs[meeting_id].append({
+            "speaker": "user",
+            "message": transcript,
+            "timestamp": asyncio.get_event_loop().time()
+        })
 
     async def on_agent_speech(self, text: str) -> None:
         """Track agent speech for evaluation"""
         meeting_id = self.session.context.get("meetingId", "unknown")
-        if meeting_id in conversation_logs:
-            conversation_logs[meeting_id].append({
-                "speaker": "agent", 
-                "message": text,
-                "timestamp": asyncio.get_event_loop().time()
-            })
+        print(f"[{meeting_id}] Agent said: {text}")
+        if meeting_id not in conversation_logs:
+            conversation_logs[meeting_id] = []
+        conversation_logs[meeting_id].append({
+            "speaker": "agent", 
+            "message": text,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+    
+    async def on_user_transcript(self, transcript: str) -> None:
+        """Alternative method to track user transcripts"""
+        await self.on_user_speech(transcript)
+    
+    async def on_agent_response(self, response: str) -> None:
+        """Alternative method to track agent responses"""
+        await self.on_agent_speech(response)
+        
+    async def on_speech_started(self, speaker: str) -> None:
+        """Track when speech starts"""
+        meeting_id = self.session.context.get("meetingId", "unknown")
+        print(f"[{meeting_id}] Speech started by: {speaker}")
+    
+    async def on_speech_ended(self, speaker: str) -> None:
+        """Track when speech ends"""
+        meeting_id = self.session.context.get("meetingId", "unknown")
+        print(f"[{meeting_id}] Speech ended by: {speaker}")
 
     async def process_interview_evaluation(self, meeting_id: str) -> None:
         """Process the conversation and extract evaluation insights"""
@@ -448,6 +486,38 @@ async def debug_get_evaluation_info():
         "active_evaluations": list(evaluation_results.keys()),
         "active_conversations": list(conversation_logs.keys())
     }
+
+@app.get("/debug/conversations")
+async def debug_conversations():
+    """Debug endpoint to see all conversation logs"""
+    return {
+        "total_conversations": len(conversation_logs),
+        "conversations": {
+            meeting_id: {
+                "message_count": len(messages),
+                "messages": messages
+            } for meeting_id, messages in conversation_logs.items()
+        },
+        "active_sessions": list(active_sessions.keys())
+    }
+
+@app.get("/debug/conversation/{meeting_id}")
+async def debug_specific_conversation(meeting_id: str):
+    """Debug endpoint to see specific conversation"""
+    if meeting_id in conversation_logs:
+        return {
+            "meeting_id": meeting_id,
+            "message_count": len(conversation_logs[meeting_id]),
+            "conversation": conversation_logs[meeting_id],
+            "has_evaluation": meeting_id in evaluation_results,
+            "evaluation": evaluation_results.get(meeting_id, None)
+        }
+    else:
+        return {
+            "meeting_id": meeting_id,
+            "error": "Conversation not found",
+            "available_conversations": list(conversation_logs.keys())
+        }
 
 
 @app.get("/")
