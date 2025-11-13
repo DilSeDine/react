@@ -11,10 +11,8 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from videosdk.agents import (Agent, AgentSession, MCPServerHTTP,
-                             MCPServerStdio, RealTimePipeline, function_tool, 
-                             RoomOptions, JobContext)
+                             MCPServerStdio, RealTimePipeline, function_tool)
 from videosdk.plugins.google import GeminiLiveConfig, GeminiRealtime
-from videosdk.plugins.simli import SimliAvatar, SimliConfig
 
 load_dotenv()
 
@@ -83,8 +81,6 @@ class MeetingReqConfig(BaseModel):
     system_prompt: str
     topP: float
     topK: float
-    enable_avatar: bool = False  # Optional flag to enable Simli avatar
-    face_id: str = "d2a5c7c6-fed9-4f55-bcb3-062f7cd20103"  # Default face ID
 
 
 class LeaveAgentReqConfig(BaseModel): # For the leave endpoint
@@ -109,31 +105,17 @@ async def server_operations(req: MeetingReqConfig):
         )
     )
 
-    # Initialize Simli Avatar if enabled
-    pipeline = None
-    if req.enable_avatar and os.getenv("SIMLI_API_KEY"):
-        print(f"[{meeting_id}] Initializing Simli Avatar with face ID: {req.face_id}")
-        simli_config = SimliConfig(
-            apiKey=os.getenv("SIMLI_API_KEY"),
-            faceId=req.face_id,
-            maxSessionLength=1800,
-            maxIdleTime=600,
-        )
-        simli_avatar = SimliAvatar(
-            config=simli_config,
-            is_trinity_avatar=True,
-        )
-        pipeline = RealTimePipeline(model=model, avatar=simli_avatar)
-        print(f"[{meeting_id}] Simli Avatar initialized successfully")
-    else:
-        pipeline = RealTimePipeline(model=model)
-        if req.enable_avatar:
-            print(f"[{meeting_id}] Avatar requested but SIMLI_API_KEY not found - using voice-only mode")
+    pipeline = RealTimePipeline(model=model)
 
-    # Create agent session without context parameter (newer API)
+    # Pass system_prompt and personality in the context if your agent uses them
     session = AgentSession(
         agent=MyVoiceAgent(req.system_prompt, req.personality),
-        pipeline=pipeline
+        pipeline=pipeline,
+        context={
+            "meetingId": meeting_id,
+            "name": "Gemini Agent",
+            "videosdk_auth": req.token,
+        }
     )
 
     active_sessions[meeting_id] = session
@@ -141,13 +123,7 @@ async def server_operations(req: MeetingReqConfig):
 
     try:
         print(f"[{meeting_id}] Agent attempting to start...")
-        
-        # Set environment variables for VideoSDK connection
-        os.environ["VIDEOSDK_ROOM_ID"] = meeting_id
-        os.environ["VIDEOSDK_AUTH_TOKEN"] = req.token
-        
-        # Start the session - the room joining might be handled through environment variables
-        await session.start(wait_for_participant=True)
+        await session.start()
         print(f"[{meeting_id}] Agent session.start() completed normally.")
     except Exception as ex:
         print(f"[{meeting_id}] [ERROR] in agent session: {ex}")
@@ -177,9 +153,7 @@ async def join_agent_info():
             "temperature": "float",
             "system_prompt": "string",
             "topP": "float",
-            "topK": "float",
-            "enable_avatar": "boolean (optional)",
-            "face_id": "string (optional)"
+            "topK": "float"
         },
         "documentation": "Visit /docs for interactive API documentation"
     }
@@ -258,7 +232,6 @@ if __name__ == "__main__":
     print(f"  PORT: {os.getenv('PORT')}")
     print(f"  GOOGLE_API_KEY: {'Set' if os.getenv('GOOGLE_API_KEY') else 'Not set'}")
     print(f"  VIDEOSDK_API_KEY: {'Set' if os.getenv('VIDEOSDK_API_KEY') else 'Not set'}")
-    print(f"  SIMLI_API_KEY: {'Set' if os.getenv('SIMLI_API_KEY') else 'Not set'}")
     
     # Use 0.0.0.0 to bind to all interfaces for deployment platforms like Render
     # Disable reload in production
