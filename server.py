@@ -212,22 +212,11 @@ class MyVoiceAgent(Agent):
         # Initialize comprehensive session tracking
         await self.initialize_session_metadata(meeting_id)
         
-        welcome_message = "Hey, How can I help you today?"
-        print(f"[{meeting_id}] Sending welcome message: {welcome_message}")
-        
-        # Use session.say() method
-        await self.session.say(welcome_message)
-        
-        # Track the welcome message with enhanced metadata
-        await self.log_conversation("agent", welcome_message, {
-            "message_type": "greeting",
-            "phase": self.current_phase,
-            "question_number": 0
-        })
+        print(f"[{meeting_id}] Agent entered meeting, letting system prompt handle the conversation flow...")
         
         # Update session status
         session_metadata[meeting_id]['interview_status'] = 'in_progress'
-        print(f"[{meeting_id}] Welcome message logged and session initialized")
+        print(f"[{meeting_id}] Session initialized, agent will follow system prompt")
     
     async def on_exit(self) -> None:
         meeting_id = self.session.context.get("meetingId", "unknown")
@@ -337,8 +326,12 @@ class MyVoiceAgent(Agent):
         })
         
         # Auto-evaluate if this seems like an answer to a question
-        if self.question_count > 0 and len(transcript.split()) > 5:
+        if self.question_count > 0 and len(transcript.split()) > 3:  # Lower threshold
             await self.auto_evaluate_response(transcript)
+        
+        # Log as potential response even if short
+        if self.question_count > 0:
+            print(f"[{meeting_id}] Potential answer to question {self.question_count}: {transcript[:100]}...")
 
     async def on_agent_speech(self, text: str) -> None:
         """Enhanced agent speech tracking"""
@@ -348,8 +341,8 @@ class MyVoiceAgent(Agent):
             
         print(f"[{meeting_id}] Agent speech detected: {text}")
         
-        # Check if this is a question
-        is_question = '?' in text or any(starter in text.lower() for starter in ['can you', 'tell me', 'describe', 'what', 'how', 'why'])
+        # Enhanced question detection
+        is_question = self.is_question(text)
         
         if is_question:
             self.question_count += 1
@@ -362,27 +355,65 @@ class MyVoiceAgent(Agent):
                 "question_type": question_type,
                 "phase": self.current_phase
             })
+            
+            # Update session metadata
+            meeting_id = getattr(self, 'meeting_id', 'unknown')
+            if meeting_id in session_metadata:
+                session_metadata[meeting_id]['total_questions'] = self.question_count
         else:
             await self.log_conversation("agent", text, {
                 "message_type": "statement",
                 "phase": self.current_phase
             })
 
+    def is_question(self, text: str) -> bool:
+        """Enhanced question detection"""
+        text_lower = text.lower().strip()
+        
+        # Direct question indicators
+        if '?' in text:
+            return True
+        
+        # Question starters
+        question_starters = [
+            'can you', 'could you', 'would you', 'will you',
+            'tell me', 'describe', 'explain', 'share',
+            'what', 'how', 'why', 'when', 'where', 'which', 'who',
+            'do you', 'did you', 'have you', 'are you', 'were you',
+            'walk me through', 'give me an example',
+            'think about', 'consider', 'discuss'
+        ]
+        
+        if any(text_lower.startswith(starter) for starter in question_starters):
+            return True
+        
+        # Interview-specific question patterns
+        interview_patterns = [
+            'your experience', 'your background', 'your approach',
+            'situation where', 'time when', 'example of',
+            'challenge', 'problem', 'difficult'
+        ]
+        
+        if any(pattern in text_lower for pattern in interview_patterns):
+            return True
+        
+        return False
+    
     def classify_question_type(self, question: str) -> str:
         """Classify the type of question being asked"""
         question_lower = question.lower()
         
-        if any(word in question_lower for word in ['lead', 'leadership', 'manage team', 'team project']):
+        if any(word in question_lower for word in ['lead', 'leadership', 'manage team', 'team project', 'led a team']):
             return 'leadership_scenario'
-        elif any(word in question_lower for word in ['business problem', 'case', 'achievement', 'impact']):
+        elif any(word in question_lower for word in ['business problem', 'case', 'achievement', 'impact', 'significant', 'professional']):
             return 'business_case'
-        elif any(word in question_lower for word in ['market', 'industry', 'strategy', 'trends']):
+        elif any(word in question_lower for word in ['market', 'industry', 'strategy', 'trends', 'competitive']):
             return 'market_strategy'
-        elif any(word in question_lower for word in ['client', 'customer', 'stakeholder']):
+        elif any(word in question_lower for word in ['client', 'customer', 'stakeholder', 'relationship']):
             return 'client_management'
-        elif any(word in question_lower for word in ['team member', 'difficult', 'conflict', 'collaboration']):
+        elif any(word in question_lower for word in ['team member', 'difficult', 'conflict', 'collaboration', 'interpersonal']):
             return 'team_dynamics'
-        elif any(word in question_lower for word in ['introduction', 'tell me about', 'background']):
+        elif any(word in question_lower for word in ['introduction', 'tell me about', 'background', 'yourself']):
             return 'introduction'
         else:
             return 'general'
