@@ -94,17 +94,62 @@ class MyVoiceAgent(Agent):
         await asyncio.sleep(1)
         await self.session.leave()
     
-    async def on_user_speech(self, text: str) -> None:
-        """Called when user speech is detected"""
+    async def on_participant_speech(self, participant_id: str, text: str) -> None:
+        """Called when any participant (including user) speaks"""
+        print(f"[{self.meeting_id}] Participant {participant_id} said: {text}")
+        # Log user speech (exclude agent's own speech)
+        if self.meeting_id and self.meeting_id in meeting_transcripts:
+            # Only log if it's not the agent speaking
+            if participant_id != "Agent":
+                meeting_transcripts[self.meeting_id]["user_transcript"].append(text)
+                print(f"[{self.meeting_id}] Logged user speech: {text}")
+    
+    async def on_speech_to_text(self, text: str, participant_id: str = None) -> None:
+        """Called when speech is converted to text"""
+        print(f"[{self.meeting_id}] Speech to text from {participant_id}: {text}")
         # Log user speech
         if self.meeting_id and self.meeting_id in meeting_transcripts:
-            meeting_transcripts[self.meeting_id]["user_transcript"].append(text)
+            if participant_id and participant_id != "Agent":
+                meeting_transcripts[self.meeting_id]["user_transcript"].append(text)
+                print(f"[{self.meeting_id}] Logged STT user speech: {text}")
     
-    async def on_agent_speech(self, text: str) -> None:
-        """Called when agent speech is generated"""
+    async def on_message(self, message: str, participant_id: str = None) -> str:
+        """Called when user sends a message or speaks"""
+        print(f"[{self.meeting_id}] Message from {participant_id}: {message}")
+        # Log user speech/message
+        if self.meeting_id and self.meeting_id in meeting_transcripts:
+            if participant_id and participant_id != "Agent":
+                meeting_transcripts[self.meeting_id]["user_transcript"].append(message)
+                print(f"[{self.meeting_id}] Logged user message: {message}")
+        
+        # Return a response (this method should return a string)
+        return f"I heard you say: {message}"
+        
+    async def on_llm_response(self, response: str) -> None:
+        """Called when LLM generates a response"""
+        print(f"[{self.meeting_id}] LLM Response: {response}")
         # Log AI speech
         if self.meeting_id and self.meeting_id in meeting_transcripts:
-            meeting_transcripts[self.meeting_id]["ai_transcript"].append(text)
+            meeting_transcripts[self.meeting_id]["ai_transcript"].append(response)
+            print(f"[{self.meeting_id}] Logged AI response: {response}")
+    
+    async def on_audio_received(self, audio_data) -> None:
+        """Called when audio is received - for debugging"""
+        print(f"[{self.meeting_id}] Audio received from user")
+    
+    async def on_transcription(self, text: str, participant_id: str = None) -> None:
+        """Alternative transcription callback"""
+        print(f"[{self.meeting_id}] Transcription from {participant_id}: {text}")
+        if self.meeting_id and self.meeting_id in meeting_transcripts:
+            if participant_id and participant_id != "Agent":
+                meeting_transcripts[self.meeting_id]["user_transcript"].append(text)
+                print(f"[{self.meeting_id}] Logged transcription: {text}")
+    
+    def __getattribute__(self, name):
+        """Debug method to see what methods are being called"""
+        if name.startswith('on_') and not name in ['on_enter', 'on_exit']:
+            print(f"[{getattr(self, 'meeting_id', 'unknown')}] Method called: {name}")
+        return super().__getattribute__(name)
   
 
 class MeetingReqConfig(BaseModel):
