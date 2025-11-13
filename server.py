@@ -332,12 +332,23 @@ async def leave_agent(req: LeaveAgentReqConfig):
     if session:
         print(f"[{meeting_id}] Session removed from active_sessions.")
         
-        # Force the agent to leave gracefully to trigger on_exit()
+        # Try to trigger evaluation processing first
         try:
-            await session.leave()
-            print(f"[{meeting_id}] Session.leave() called to trigger evaluation processing.")
-            # Give a moment for evaluation to process
-            await asyncio.sleep(2)
+            if hasattr(session, 'agent') and session.agent:
+                # Try to process evaluation using the agent
+                await session.agent.process_interview_evaluation(meeting_id)
+                print(f"[{meeting_id}] Evaluation processed using agent instance.")
+        except Exception as e:
+            print(f"[{meeting_id}] Error processing evaluation with agent: {e}")
+        
+        # Try to close session gracefully (but don't await if it returns None)
+        try:
+            leave_result = session.leave()
+            if leave_result is not None:
+                await leave_result
+                print(f"[{meeting_id}] Session.leave() completed successfully.")
+            else:
+                print(f"[{meeting_id}] Session.leave() returned None, session likely already closed.")
         except Exception as e:
             print(f"[{meeting_id}] Error during session.leave(): {e}")
         
@@ -351,15 +362,22 @@ async def leave_agent(req: LeaveAgentReqConfig):
             print(f"[{meeting_id}] Evaluation results found and included in response.")
         elif meeting_id in conversation_logs:
             conversation_data = conversation_logs[meeting_id]
-            print(f"[{meeting_id}] Conversation data found, manually processing evaluation...")
+            print(f"[{meeting_id}] Conversation data found, processing evaluation with static method...")
             
-            # Manually process evaluation if not already done
-            if session.agent:
-                await session.agent.process_interview_evaluation(meeting_id)
-                # Check again after manual processing
-                if meeting_id in evaluation_results:
-                    evaluation_data = evaluation_results[meeting_id]["evaluation"]
-                    print(f"[{meeting_id}] Evaluation manually processed and included.")
+            # Use static method to process evaluation
+            full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation_data])
+            evaluation = extract_evaluation_insights_static(full_conversation)
+            
+            if evaluation:
+                evaluation_results[meeting_id] = {
+                    "evaluation": evaluation,
+                    "conversation": conversation_data,
+                    "processed_at": asyncio.get_event_loop().time()
+                }
+                evaluation_data = evaluation
+                print(f"[{meeting_id}] Evaluation processed with static method and stored.")
+            else:
+                print(f"[{meeting_id}] No evaluation insights found in conversation.")
         
         return {
             "status": "removed",
