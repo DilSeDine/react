@@ -8,7 +8,6 @@ attrs==25.3.0
 audioop-lts==0.2.1
 audioread==3.0.1
 authlib==1.6.0
-av==13.1.0
 cachetools==5.5.2
 certifi==2025.4.26
 cffi==1.17.1
@@ -90,10 +89,10 @@ typing-inspection==0.4.1
 urllib3==2.4.0
 uvicorn==0.34.3
 videosdk==0.1.0
-videosdk-agents>=0.0.44
+videosdk-agents==0.0.10
 videosdk-plugins-google==0.0.5
 videosdk-plugins-openai==0.0.7
-videosdk-plugins-simli>=0.0.44
+videosdk-plugins-simli==0.0.4
 vsaiortc==0.0.8
 websockets==15.0.1
 yarl==1.20.1
