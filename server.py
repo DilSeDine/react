@@ -16,7 +16,11 @@ from videosdk.plugins.google import GeminiLiveConfig, GeminiRealtime
 
 load_dotenv()
 
-port = int(os.getenv("PORT", 10000)) # Use environment variable for port, default to 10000 for Render
+# Get port from environment with better debugging
+port = int(os.getenv("PORT", 10000))
+print(f"Starting server on port: {port}")
+print(f"PORT environment variable: {os.getenv('PORT')}")
+
 app = FastAPI()
 
 app.add_middleware(
@@ -222,6 +226,14 @@ async def test():
 
 
 if __name__ == "__main__":
-    # Fixed to use the correct module name (server instead of main)
+    # Print configuration for debugging
+    print(f"Server starting with host=0.0.0.0, port={port}")
+    print(f"Environment variables:")
+    print(f"  PORT: {os.getenv('PORT')}")
+    print(f"  GOOGLE_API_KEY: {'Set' if os.getenv('GOOGLE_API_KEY') else 'Not set'}")
+    print(f"  VIDEOSDK_API_KEY: {'Set' if os.getenv('VIDEOSDK_API_KEY') else 'Not set'}")
+    
     # Use 0.0.0.0 to bind to all interfaces for deployment platforms like Render
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True) # Added reload=True for dev
+    # Disable reload in production
+    is_development = os.getenv('RENDER') is None
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=is_development)
