@@ -41,6 +41,39 @@ conversation_logs: Dict[str, List[Dict]] = {}
 evaluation_results: Dict[str, Dict] = {}
 # --- ---
 
+def extract_evaluation_insights_static(conversation_text: str) -> Optional[Dict]:
+    """Static function to extract structured evaluation insights from conversation text"""
+    insights = {}
+    
+    # Define regex patterns for extracting evaluation insights
+    patterns = {
+        'communication_score': r'COMMUNICATION_SCORE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'business_case_analysis': r'BUSINESS_CASE_ANALYSIS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'leadership_potential': r'LEADERSHIP_POTENTIAL:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'team_dynamics_skills': r'TEAM_DYNAMICS_SKILLS:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'market_strategy_knowledge': r'MARKET_STRATEGY_KNOWLEDGE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'client_management_experience': r'CLIENT_MANAGEMENT_EXPERIENCE:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'overall_cultural_fit': r'OVERALL_CULTURAL_FIT:\s*\[(\d+)\]\s*(.*?)(?=\n|$)',
+        'recommendation_status': r'RECOMMENDATION_STATUS:\s*(.*?)(?=\n|$)',
+        'improvement_areas': r'IMPROVEMENT_AREAS:\s*(.*?)(?=\n|$)',
+        'notable_strengths': r'NOTABLE_STRENGTHS:\s*(.*?)(?=\n|$)'
+    }
+    
+    for key, pattern in patterns.items():
+        match = re.search(pattern, conversation_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            if key in ['communication_score', 'business_case_analysis', 'leadership_potential', 
+                      'team_dynamics_skills', 'market_strategy_knowledge', 'client_management_experience', 
+                      'overall_cultural_fit']:
+                insights[key] = {
+                    'score': int(match.group(1)),
+                    'feedback': match.group(2).strip()
+                }
+            else:
+                insights[key] = match.group(1).strip()
+    
+    return insights if insights else None
+
 class MyVoiceAgent(Agent):
     def __init__(self, system_prompt: str, personality: str):
         # mcp_script = Path(__file__).parent / "mcp_studio.py"
@@ -299,6 +332,15 @@ async def leave_agent(req: LeaveAgentReqConfig):
     if session:
         print(f"[{meeting_id}] Session removed from active_sessions.")
         
+        # Force the agent to leave gracefully to trigger on_exit()
+        try:
+            await session.leave()
+            print(f"[{meeting_id}] Session.leave() called to trigger evaluation processing.")
+            # Give a moment for evaluation to process
+            await asyncio.sleep(2)
+        except Exception as e:
+            print(f"[{meeting_id}] Error during session.leave(): {e}")
+        
         # Check for evaluation results
         evaluation_data = None
         conversation_data = None
@@ -309,7 +351,15 @@ async def leave_agent(req: LeaveAgentReqConfig):
             print(f"[{meeting_id}] Evaluation results found and included in response.")
         elif meeting_id in conversation_logs:
             conversation_data = conversation_logs[meeting_id]
-            print(f"[{meeting_id}] Conversation data found but evaluation not yet processed.")
+            print(f"[{meeting_id}] Conversation data found, manually processing evaluation...")
+            
+            # Manually process evaluation if not already done
+            if session.agent:
+                await session.agent.process_interview_evaluation(meeting_id)
+                # Check again after manual processing
+                if meeting_id in evaluation_results:
+                    evaluation_data = evaluation_results[meeting_id]["evaluation"]
+                    print(f"[{meeting_id}] Evaluation manually processed and included.")
         
         return {
             "status": "removed",
@@ -330,8 +380,23 @@ async def leave_agent(req: LeaveAgentReqConfig):
         if meeting_id in evaluation_results:
             evaluation_data = evaluation_results[meeting_id]["evaluation"]
             conversation_data = evaluation_results[meeting_id]["conversation"]
+            print(f"[{meeting_id}] Found existing evaluation results.")
         elif meeting_id in conversation_logs:
             conversation_data = conversation_logs[meeting_id]
+            print(f"[{meeting_id}] Found conversation, manually processing evaluation...")
+            
+            # Manually process evaluation using static method approach
+            full_conversation = "\n".join([f"{entry['speaker']}: {entry['message']}" for entry in conversation_data])
+            evaluation = extract_evaluation_insights_static(full_conversation)
+            
+            if evaluation:
+                evaluation_results[meeting_id] = {
+                    "evaluation": evaluation,
+                    "conversation": conversation_data,
+                    "processed_at": asyncio.get_event_loop().time()
+                }
+                evaluation_data = evaluation
+                print(f"[{meeting_id}] Evaluation manually processed and stored.")
         
         return {
             "status": "not_found",
